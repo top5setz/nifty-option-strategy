@@ -45,7 +45,6 @@ if uploaded_file:
     df_chain, spot_price = fetch_option_chain_offline(uploaded_file, budget)
     st.sidebar.write(f"📌 Inferred Spot Price: `{spot_price}`")
 
-    # Strategy Logic
     st.markdown("### 🔍 Single-leg Trade Ideas Based on Top Traders")
     strategies = []
     for _, row in df_chain.iterrows():
@@ -71,7 +70,6 @@ if uploaded_file:
     else:
         st.warning("No trade signals found based on strategy filters.")
 
-    # Spread Strategy
     st.markdown("### 📐 Spread Strategy Ideas (Bull Call & Bear Put)")
     spread_ideas = []
 
