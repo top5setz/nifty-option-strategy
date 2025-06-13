@@ -1,115 +1,136 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
 
-st.set_page_config(page_title="Offline Nifty Option Strategy Tool", layout="wide")
+st.set_page_config("📈 Nifty Option Analyzer", layout="wide")
 
-# --- Header ---
-st.markdown("<h1 style='text-align:center;color:#004d99;'>📈 Offline Nifty Option Strategy Analyzer</h1>", unsafe_allow_html=True)
-st.markdown("---")
+st.title("📈 Offline Nifty Option Strategy Analyzer")
+st.markdown("Upload a CSV or Excel file of Nifty Option Chain data to get trade suggestions based on popular trader strategies.")
 
 # --- Sidebar Inputs ---
-st.sidebar.header("📊 Input Configuration")
-uploaded_file = st.sidebar.file_uploader("Upload Option Chain File (.csv or .xlsx)", type=["csv", "xlsx"])
-budget = st.sidebar.number_input("Budget (INR)", min_value=1000, value=10000, step=500)
-show_charts = st.sidebar.checkbox("Show Charts", True)
+st.sidebar.header("📂 Upload Data & Budget")
+uploaded_file = st.sidebar.file_uploader("Upload Option Chain File", type=["csv", "xlsx"])
+budget = st.sidebar.number_input("💰 Budget (INR)", min_value=1000, value=10000, step=500)
 
+# --- Data Processing Function ---
 def fetch_option_chain_offline(uploaded_file, budget):
     try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
+        df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
+        df.columns = df.columns.str.strip().str.lower()
 
-        df = df.rename(columns={
-            "StrikePrice": "StrikePrice",
-            "Type": "type",
-            "LTP": "LTP",
-            "OI": "OI",
-            "ChngOI": "ChngOI",
-            "Volume": "Volume",
-            "IV": "IV"
-        })
+        rename_map = {
+            "strike price": "strikeprice", "strike": "strikeprice",
+            "ltp": "ltp", "last traded price": "ltp",
+            "oi": "oi", "open interest": "oi",
+            "chng in oi": "chngoi", "change in oi": "chngoi",
+            "volume": "volume",
+            "iv": "iv", "implied volatility": "iv",
+            "type": "type"
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
-        df["Cost"] = df["LTP"] * 50
-        df = df[df["Cost"] <= budget]
-        spot_price = df.loc[df["Volume"].idxmax(), "StrikePrice"]
+        # Fill missing 'type'
+        if "type" not in df.columns:
+            if "ce" in uploaded_file.name.lower():
+                df["type"] = "CE"
+            elif "pe" in uploaded_file.name.lower():
+                df["type"] = "PE"
+            else:
+                df["type"] = "CE"  # default fallback
+
+        for col in ["strikeprice", "ltp", "oi", "chngoi", "volume", "iv"]:
+            if col not in df.columns:
+                st.error(f"❌ Missing required column: `{col}`")
+                st.info(f"Available columns: {list(df.columns)}")
+                return pd.DataFrame(), 0
+
+        df["cost"] = df["ltp"] * 50
+        df = df[df["cost"] <= budget]
+
+        spot_price = df.loc[df["volume"].idxmax(), "strikeprice"] if not df.empty else 0
         return df, spot_price
     except Exception as e:
-        st.error(f"❌ Failed to read option data: {e}")
+        st.error(f"⚠️ Error reading data: {e}")
         return pd.DataFrame(), 0
 
+# --- Main Logic ---
 if uploaded_file:
     df_chain, spot_price = fetch_option_chain_offline(uploaded_file, budget)
-    st.sidebar.write(f"📌 Inferred Spot Price: `{spot_price}`")
+    if df_chain.empty:
+        st.warning("📭 No eligible trades found under your budget.")
+        st.stop()
 
-    st.markdown("### 🔍 Single-leg Trade Ideas Based on Top Traders")
-    strategies = []
+    st.success(f"🧮 Estimated Spot Price: {spot_price}")
+
+    # Strategy Rules
+    st.subheader("📌 Trade Ideas Based on 5 Top Traders")
+    ideas = []
     for _, row in df_chain.iterrows():
-        t, strat, reason = "", "", ""
-        if row["OI"] < df_chain["OI"].quantile(0.3) and row["Volume"] > df_chain["Volume"].quantile(0.7):
-            t, strat, reason = "Sivakumar", "Scalping", "Low OI & high volume"
-        elif row["type"] == "CE" and abs(row["StrikePrice"] - spot_price) <= 200:
-            t, strat, reason = "P. R. Sundar", "Neutral CE Sell", "Strike near spot"
-        elif row["type"] == "CE" and row["StrikePrice"] > spot_price:
-            t, strat, reason = "Ghanshyam Tech", "Breakout", "Call breakout above spot"
-        elif row["type"] == "PE" and row["StrikePrice"] < spot_price:
-            t, strat, reason = "Subasish Pani", "Reversal PE Buy", "Below spot PE buy"
-        elif row["IV"] > df_chain["IV"].quantile(0.7):
-            t, strat, reason = "Anant Ladha", "Hedged Play", "High IV event setup"
-        if strat:
-            strategies.append({
-                "Trader": t, "Strike": row["StrikePrice"], "Type": row["type"],
-                "LTP": row["LTP"], "IV": row["IV"], "Cost": row["Cost"], "Strategy": strat, "Reason": reason
+        reason, strategy, trader = "", "", ""
+        if row["oi"] < df_chain["oi"].quantile(0.3) and row["volume"] > df_chain["volume"].quantile(0.7):
+            trader, strategy, reason = "Sivakumar", "Scalping", "Low OI, High Volume"
+        elif row["type"] == "CE" and abs(row["strikeprice"] - spot_price) < 200:
+            trader, strategy, reason = "P. R. Sundar", "Neutral Selling", "Near Spot Range"
+        elif row["type"] == "CE" and row["strikeprice"] > spot_price:
+            trader, strategy, reason = "Ghanshyam Tech", "Breakout", "Price Action CE"
+        elif row["type"] == "PE" and row["strikeprice"] < spot_price:
+            trader, strategy, reason = "Subasish Pani", "Reversal", "Support/Resistance PE"
+        elif row["iv"] > df_chain["iv"].quantile(0.7):
+            trader, strategy, reason = "Anant Ladha", "Event Volatility", "High IV"
+        if trader:
+            ideas.append({
+                "Trader": trader, "Strategy": strategy, "Reason": reason,
+                "Strike": row["strikeprice"], "Type": row["type"],
+                "LTP": row["ltp"], "IV": row["iv"], "Cost": row["cost"]
             })
-    df_strat = pd.DataFrame(strategies)
-    if not df_strat.empty:
-        st.dataframe(df_strat)
+
+    if ideas:
+        st.dataframe(pd.DataFrame(ideas))
     else:
-        st.warning("No trade signals found based on strategy filters.")
+        st.info("No trade ideas matched the strategy filters.")
 
-    st.markdown("### 📐 Spread Strategy Ideas (Bull Call & Bear Put)")
-    spread_ideas = []
+    # Spread Ideas
+    st.subheader("📐 Bull Call & Bear Put Spread Strategies")
+    spreads = []
 
-    ce_df = df_chain[df_chain["type"] == "CE"].sort_values("StrikePrice")
-    for i in range(len(ce_df) - 1):
-        buy = ce_df.iloc[i]
-        sell = ce_df.iloc[i + 1]
-        if buy["StrikePrice"] < spot_price:
-            spread_ideas.append({
-                "Strategy": "Bull Call Spread", "Buy CE": buy["StrikePrice"], "Sell CE": sell["StrikePrice"],
-                "Net Cost": round((buy["LTP"] - sell["LTP"]) * 50, 2),
-                "Max Profit": round((sell["StrikePrice"] - buy["StrikePrice"]) * 50 - (buy["LTP"] - sell["LTP"]) * 50, 2)
+    ce_df = df_chain[df_chain["type"] == "CE"].sort_values("strikeprice")
+    for i in range(len(ce_df)-1):
+        buy, sell = ce_df.iloc[i], ce_df.iloc[i+1]
+        if buy["strikeprice"] < spot_price:
+            spreads.append({
+                "Strategy": "Bull Call Spread",
+                "Buy CE": buy["strikeprice"], "Sell CE": sell["strikeprice"],
+                "Net Cost": round((buy["ltp"] - sell["ltp"]) * 50, 2),
+                "Max Profit": round((sell["strikeprice"] - buy["strikeprice"]) * 50 - (buy["ltp"] - sell["ltp"]) * 50, 2)
             })
 
-    pe_df = df_chain[df_chain["type"] == "PE"].sort_values("StrikePrice", ascending=False)
-    for i in range(len(pe_df) - 1):
-        buy = pe_df.iloc[i]
-        sell = pe_df.iloc[i + 1]
-        if buy["StrikePrice"] > spot_price:
-            spread_ideas.append({
-                "Strategy": "Bear Put Spread", "Buy PE": buy["StrikePrice"], "Sell PE": sell["StrikePrice"],
-                "Net Cost": round((buy["LTP"] - sell["LTP"]) * 50, 2),
-                "Max Profit": round((buy["StrikePrice"] - sell["StrikePrice"]) * 50 - (buy["LTP"] - sell["LTP"]) * 50, 2)
+    pe_df = df_chain[df_chain["type"] == "PE"].sort_values("strikeprice", ascending=False)
+    for i in range(len(pe_df)-1):
+        buy, sell = pe_df.iloc[i], pe_df.iloc[i+1]
+        if buy["strikeprice"] > spot_price:
+            spreads.append({
+                "Strategy": "Bear Put Spread",
+                "Buy PE": buy["strikeprice"], "Sell PE": sell["strikeprice"],
+                "Net Cost": round((buy["ltp"] - sell["ltp"]) * 50, 2),
+                "Max Profit": round((buy["strikeprice"] - sell["strikeprice"]) * 50 - (buy["ltp"] - sell["ltp"]) * 50, 2)
             })
 
-    if spread_ideas:
-        st.dataframe(pd.DataFrame(spread_ideas))
+    if spreads:
+        st.dataframe(pd.DataFrame(spreads))
     else:
-        st.info("No spread setups matching current filter conditions.")
+        st.warning("No spread trades found.")
 
-    if show_charts:
-        st.markdown("### 📊 OI and IV Visuals")
-        for opt_type in ["CE", "PE"]:
-            subset = df_chain[df_chain["type"] == opt_type]
-            chart = alt.Chart(subset).mark_circle(size=60).encode(
-                x="StrikePrice", y="OI",
-                color=alt.Color("IV", scale=alt.Scale(scheme="viridis")),
-                tooltip=["StrikePrice", "OI", "Volume", "IV", "LTP"]
-            ).properties(title=f"{opt_type} - OI vs IV")
+    # Optional Chart
+    st.subheader("📊 OI vs IV by Strike")
+    for typ in ["CE", "PE"]:
+        sub = df_chain[df_chain["type"] == typ]
+        if not sub.empty:
+            chart = alt.Chart(sub).mark_circle(size=60).encode(
+                x="strikeprice", y="oi",
+                color=alt.Color("iv", scale=alt.Scale(scheme="blueorange")),
+                tooltip=["strikeprice", "oi", "volume", "ltp", "iv"]
+            ).properties(title=f"{typ} - OI vs IV")
             st.altair_chart(chart, use_container_width=True)
-
 else:
-    st.warning("📥 Please upload a valid Option Chain file to begin analysis.")
+    st.info("📤 Please upload a CSV or Excel file to begin.")
